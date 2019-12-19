@@ -4,6 +4,7 @@
 using System;
 using System.Data.Entity;
 using System.Linq;
+using System.Net.Http;
 using System.Threading.Tasks;
 using System.Web.Http;
 using System.Web.Http.OData;
@@ -12,6 +13,7 @@ using NuGet.Services.Entities;
 using NuGetGallery.Configuration;
 using NuGetGallery.OData;
 using NuGetGallery.OData.QueryFilter;
+using NuGetGallery.Services;
 using NuGetGallery.WebApi;
 using WebApi.OutputCache.V2;
 
@@ -23,20 +25,26 @@ namespace NuGetGallery.Controllers
     {
         private const int MaxPageSize = SearchAdaptor.MaxPageSize;
 
-        private readonly IEntityRepository<Package> _packagesRepository;
+        private readonly IReadOnlyEntityRepository<Package> _packagesRepository;
+        private readonly IEntityRepository<Package> _readWritePackagesRepository;
         private readonly IGalleryConfigurationService _configurationService;
-        private readonly ISearchService _searchService;
+        private readonly IHijackSearchServiceFactory _searchServiceFactory;
+        private readonly IFeatureFlagService _featureFlagService;
 
         public ODataV1FeedController(
-            IEntityRepository<Package> packagesRepository,
+            IReadOnlyEntityRepository<Package> packagesRepository,
+            IEntityRepository<Package> readWritePackagesRepository,
             IGalleryConfigurationService configurationService,
-            ISearchService searchService,
-            ITelemetryService telemetryService)
+            IHijackSearchServiceFactory searchServiceFactory,
+            ITelemetryService telemetryService,
+            IFeatureFlagService featureFlagService)
             : base(configurationService, telemetryService)
         {
-            _packagesRepository = packagesRepository;
-            _configurationService = configurationService;
-            _searchService = searchService;
+            _packagesRepository = packagesRepository ?? throw new ArgumentNullException(nameof(packagesRepository));
+            _readWritePackagesRepository = readWritePackagesRepository ?? throw new ArgumentNullException(nameof(readWritePackagesRepository));
+            _configurationService = configurationService ?? throw new ArgumentNullException(nameof(configurationService));
+            _searchServiceFactory = searchServiceFactory ?? throw new ArgumentNullException(nameof(searchServiceFactory));
+            _featureFlagService = featureFlagService ?? throw new ArgumentNullException(nameof(featureFlagService));
         }
 
         // /api/v1/Packages
@@ -50,12 +58,12 @@ namespace NuGetGallery.Controllers
             {
                 return BadRequest(ODataQueryVerifier.GetValidationFailedMessage(options));
             }
-            var queryable = _packagesRepository.GetAll()
-                                .Where(p => !p.IsPrerelease && p.PackageStatusKey == PackageStatus.Available)
-                                .Where(SemVerLevelKey.IsUnknownPredicate())
-                                .WithoutSortOnColumn(Version)
-                                .WithoutSortOnColumn(Id, ShouldIgnoreOrderById(options))
-                                .ToV1FeedPackageQuery(_configurationService.GetSiteRoot(UseHttps()));
+            var queryable = GetAll()
+                            .Where(p => !p.IsPrerelease && p.PackageStatusKey == PackageStatus.Available)
+                            .Where(SemVerLevelKey.IsUnknownPredicate())
+                            .WithoutSortOnColumn(Version)
+                            .WithoutSortOnColumn(Id, ShouldIgnoreOrderById(options))
+                            .ToV1FeedPackageQuery(_configurationService.GetSiteRoot(UseHttps()));
 
             return TrackedQueryResult(options, queryable, MaxPageSize, customQuery: true);
         }
@@ -70,7 +78,11 @@ namespace NuGetGallery.Controllers
 
         // /api/v1/Packages(Id=,Version=)
         [HttpGet]
-        [CacheOutput(ServerTimeSpan = NuGetODataConfig.GetByIdAndVersionCacheTimeInSeconds, Private = true, ClientTimeSpan = NuGetODataConfig.GetByIdAndVersionCacheTimeInSeconds)]
+        [ODataCacheOutput(
+            ODataCachedEndpoint.GetSpecificPackage,
+            serverTimeSpan: ODataCacheConfiguration.DefaultGetByIdAndVersionCacheTimeInSeconds,
+            Private = true,
+            ClientTimeSpan = ODataCacheConfiguration.DefaultGetByIdAndVersionCacheTimeInSeconds)]
         public async Task<IHttpActionResult> Get(ODataQueryOptions<V1FeedPackage> options, string id, string version)
         {
             var result = await GetCore(options, id, version, return404NotFoundWhenNoResults: true);
@@ -80,7 +92,11 @@ namespace NuGetGallery.Controllers
         // /api/v1/FindPackagesById()?id=
         [HttpGet]
         [HttpPost]
-        [CacheOutput(ServerTimeSpan = NuGetODataConfig.GetByIdAndVersionCacheTimeInSeconds, Private = true, ClientTimeSpan = NuGetODataConfig.GetByIdAndVersionCacheTimeInSeconds)]
+        [ODataCacheOutput(
+            ODataCachedEndpoint.FindPackagesById,
+            serverTimeSpan: ODataCacheConfiguration.DefaultGetByIdAndVersionCacheTimeInSeconds,
+            Private = true,
+            ClientTimeSpan = ODataCacheConfiguration.DefaultGetByIdAndVersionCacheTimeInSeconds)]
         public async Task<IHttpActionResult> FindPackagesById(ODataQueryOptions<V1FeedPackage> options, [FromODataUri]string id)
         {
             return await GetCore(options, id, version: null, return404NotFoundWhenNoResults: false);
@@ -88,7 +104,10 @@ namespace NuGetGallery.Controllers
 
         // /api/v1/FindPackagesById()/$count?id=
         [HttpGet]
-        [CacheOutput(ServerTimeSpan = NuGetODataConfig.GetByIdAndVersionCacheTimeInSeconds, Private = true, ClientTimeSpan = NuGetODataConfig.GetByIdAndVersionCacheTimeInSeconds)]
+        [ODataCacheOutput(
+            ODataCachedEndpoint.FindPackagesByIdCount,
+            serverTimeSpan: ODataCacheConfiguration.DefaultFindPackagesByIdCountCacheTimeInSeconds,
+            NoCache = true)]
         public async Task<IHttpActionResult> FindPackagesByIdCount(ODataQueryOptions<V1FeedPackage> options, [FromODataUri]string id)
         {
             var result = await FindPackagesById(options, id);
@@ -97,7 +116,7 @@ namespace NuGetGallery.Controllers
 
         private async Task<IHttpActionResult> GetCore(ODataQueryOptions<V1FeedPackage> options, string id, string version, bool return404NotFoundWhenNoResults)
         {
-            var packages = _packagesRepository.GetAll()
+            var packages = GetAll()
                 .Include(p => p.PackageRegistration)
                 .Where(p => p.PackageRegistration.Id.Equals(id, StringComparison.OrdinalIgnoreCase)
                             && !p.IsPrerelease
@@ -114,8 +133,9 @@ namespace NuGetGallery.Controllers
             // try the search service
             try
             {
+                var searchService = _searchServiceFactory.GetService();
                 var searchAdaptorResult = await SearchAdaptor.FindByIdAndVersionCore(
-                    _searchService,
+                    searchService,
                     GetTraditionalHttpContext().Request,
                     packages,
                     id,
@@ -189,7 +209,10 @@ namespace NuGetGallery.Controllers
         // /api/v1/Search()?searchTerm=&targetFramework=&includePrerelease=
         [HttpGet]
         [HttpPost]
-        [CacheOutput(ServerTimeSpan = NuGetODataConfig.SearchCacheTimeInSeconds, ClientTimeSpan = NuGetODataConfig.SearchCacheTimeInSeconds)]
+        [ODataCacheOutput(
+            ODataCachedEndpoint.Search,
+            serverTimeSpan: ODataCacheConfiguration.DefaultSearchCacheTimeInSeconds,
+            ClientTimeSpan = ODataCacheConfiguration.DefaultSearchCacheTimeInSeconds)]
         public async Task<IHttpActionResult> Search(
             ODataQueryOptions<V1FeedPackage> options,
             [FromODataUri]string searchTerm = "",
@@ -213,7 +236,7 @@ namespace NuGetGallery.Controllers
             }
 
             // Perform actual search
-            var packages = _packagesRepository.GetAll()
+            var packages = GetAll()
                 .Include(p => p.PackageRegistration)
                 .Include(p => p.PackageRegistration.Owners)
                 .Where(p => p.Listed && !p.IsPrerelease && p.PackageStatusKey == PackageStatus.Available)
@@ -222,8 +245,9 @@ namespace NuGetGallery.Controllers
                 .AsNoTracking();
 
             // todo: search hijack should take queryOptions instead of manually parsing query options
+            var searchService = _searchServiceFactory.GetService();
             var searchAdaptorResult = await SearchAdaptor.SearchCore(
-                _searchService,
+                searchService,
                 GetTraditionalHttpContext().Request,
                 packages,
                 searchTerm,
@@ -272,7 +296,10 @@ namespace NuGetGallery.Controllers
 
         // /api/v1/Search()/$count?searchTerm=&targetFramework=&includePrerelease=
         [HttpGet]
-        [CacheOutput(ServerTimeSpan = NuGetODataConfig.SearchCacheTimeInSeconds, ClientTimeSpan = NuGetODataConfig.SearchCacheTimeInSeconds)]
+        [ODataCacheOutput(
+            ODataCachedEndpoint.Search,
+            serverTimeSpan: ODataCacheConfiguration.DefaultSearchCacheTimeInSeconds,
+            ClientTimeSpan = ODataCacheConfiguration.DefaultSearchCacheTimeInSeconds)]
         public async Task<IHttpActionResult> SearchCount(
             ODataQueryOptions<V1FeedPackage> options,
             [FromODataUri]string searchTerm = "",
@@ -280,6 +307,27 @@ namespace NuGetGallery.Controllers
         {
             var searchResults = await Search(options, searchTerm, targetFramework);
             return searchResults.FormattedAsCountResult<V1FeedPackage>();
+        }
+
+        [HttpGet]
+        [CacheOutput(NoCache = true)]
+        public virtual HttpResponseMessage SimulateError([FromUri] string type = "Exception")
+        {
+            if (!Enum.TryParse<SimulatedErrorType>(type, out var parsedType))
+            {
+                parsedType = SimulatedErrorType.Exception;
+            }
+
+            return parsedType.MapToWebApiResult();
+        }
+
+        internal IQueryable<Package> GetAll()
+        {
+            if (_featureFlagService.IsODataDatabaseReadOnlyEnabled())
+            {
+                return _packagesRepository.GetAll();
+            }
+            return _readWritePackagesRepository.GetAll();
         }
     }
 }

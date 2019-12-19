@@ -9,7 +9,6 @@ using System.Net;
 using System.Net.Mail;
 using System.Security.Claims;
 using System.Threading.Tasks;
-using System.Web;
 using System.Web.Mvc;
 using NuGet.Services.Entities;
 using NuGet.Services.Messaging.Email;
@@ -194,6 +193,14 @@ namespace NuGetGallery
                 return challenge;
             }
 
+            // If we are an administrator and Gallery.EnforcedTenantIdForAdmin is set
+            // to require a specific tenant Id, check if the user logged in with the specified tenant.
+            if (!SiteAdminHasValidTenant(authenticatedUser))
+            {
+                var errorMessage = string.Format(CultureInfo.CurrentCulture, Strings.SiteAdminNotLoggedInWithRequiredTenant, NuGetContext.Config.Current.EnforcedTenantIdForAdmin);
+                return SignInFailure(model, linkingAccount, errorMessage);
+            }
+
             // Create session
             await _authService.CreateSessionAsync(OwinContext, authenticatedUser, usedMultiFactorAuthentication);
 
@@ -231,6 +238,17 @@ namespace NuGetGallery
 
             challenge = null;
             return false;
+        }
+
+        internal bool SiteAdminHasValidTenant(AuthenticatedUser authenticatedUser)
+        {
+            if (!string.IsNullOrEmpty(NuGetContext.Config.Current.EnforcedTenantIdForAdmin)
+                && authenticatedUser.User.IsAdministrator)
+            {
+                return string.Equals(NuGetContext.Config.Current.EnforcedTenantIdForAdmin, authenticatedUser.CredentialUsed.TenantId, StringComparison.OrdinalIgnoreCase);
+            }
+
+            return true;
         }
 
         [HttpGet]
@@ -320,18 +338,27 @@ namespace NuGetGallery
                 return challenge;
             }
 
+            // If we are an administrator and Gallery.EnforcedTenantIdForAdmin is set
+            // to require a specific tenant Id, check if the user logged in with the specified tenant.
+            if (!SiteAdminHasValidTenant(user))
+            {
+                ModelState.AddModelError("Register", string.Format(Strings.SiteAdminNotLoggedInWithRequiredTenant, NuGetContext.Config.Current.EnforcedTenantIdForAdmin));
+                return RegisterOrExternalLinkView(model, linkingAccount);
+            }
+
             // Create session
             await _authService.CreateSessionAsync(OwinContext, user, usedMultiFactorAuthentication);
             return RedirectFromRegister(returnUrl);
         }
 
-        [HttpGet]
+        [HttpPost]
+        [ValidateAntiForgeryToken]
         public virtual ActionResult LogOff(string returnUrl)
         {
             OwinContext.Authentication.SignOut();
 
             if (!string.IsNullOrEmpty(returnUrl)
-                && returnUrl.Contains("account"))
+                && (returnUrl.Contains("account") || returnUrl.Contains("Admin")))
             {
                 returnUrl = null;
             }
@@ -530,6 +557,14 @@ namespace NuGetGallery
                     return challenge;
                 }
 
+                // If we are an administrator and Gallery.EnforcedTenantIdForAdmin is set
+                // to require a specific tenant Id, check if the user logged in with the specified tenant.
+                if (!SiteAdminHasValidTenant(result.Authentication))
+                {
+                    string errorMessage = string.Format(Strings.SiteAdminNotLoggedInWithRequiredTenant, NuGetContext.Config.Current.EnforcedTenantIdForAdmin);
+                    return AuthenticationFailureOrExternalLinkExpired(errorMessage);
+                }
+
                 if (ShouldEnforceMultiFactorAuthentication(result))
                 {
                     // Invoke the authentication again enforcing multi-factor authentication for the same provider.
@@ -555,15 +590,29 @@ namespace NuGetGallery
                     result.Authentication,
                     wasMultiFactorAuthenticated: result?.LoginDetails?.WasMultiFactorAuthenticated ?? false);
 
-                // Update the 2FA if used during login but user does not have it set on their account. Only for personal microsoft accounts.
+                // Update the 2FA if used during login but user does not have it set on their account. Enforced for only personal microsoft accounts
+                // record it in the DB for the AAD accounts.
                 if (result?.LoginDetails != null
                     && result.LoginDetails.WasMultiFactorAuthenticated
                     && !result.Authentication.User.EnableMultiFactorAuthentication
+                    && CredentialTypes.IsExternal(result.Credential))
+                {
+                    await _userService.ChangeMultiFactorAuthentication(result.Authentication.User, enableMultiFactor: true, referrer: "Authentication");
+                    OwinContext.AddClaim(NuGetClaims.EnabledMultiFactorAuthentication);
+                    if (CredentialTypes.IsMicrosoftAccount(result.Credential.Type))
+                    {
+                        TempData["Message"] = Strings.MultiFactorAuth_LoginUpdate;
+                    }
+                }
+
+                // Ask the user to enable multifactor authentication, if the user
+                // 1. Does not have 2FA enabled, and
+                // 2. Signed in with MSA account.
+                var currentUser = result.Authentication.User;
+                if (!currentUser.EnableMultiFactorAuthentication
                     && CredentialTypes.IsMicrosoftAccount(result.Credential.Type))
                 {
-                    await _userService.ChangeMultiFactorAuthentication(result.Authentication.User, enableMultiFactor: true);
-                    OwinContext.AddClaim(NuGetClaims.EnabledMultiFactorAuthentication);
-                    TempData["Message"] = Strings.MultiFactorAuth_LoginUpdate;
+                    TempData[GalleryConstants.AskUserToEnable2FA] = true;
                 }
 
                 return SafeRedirect(returnUrl);
@@ -764,7 +813,7 @@ namespace NuGetGallery
         {
             // User got here without an external login cookie (or an expired one)
             // Send them to the logon action with a message
-            TempData["Message"] = string.IsNullOrEmpty(errorMessage) ? Strings.ExternalAccountLinkExpired : errorMessage;
+            TempData["ErrorMessage"] = string.IsNullOrEmpty(errorMessage) ? Strings.ExternalAccountLinkExpired : errorMessage;
             return Redirect(Url.LogOn(null, relativeUrl: false));
         }
 

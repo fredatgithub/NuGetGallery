@@ -51,6 +51,11 @@ namespace NuGetGallery
         /// </remarks>
         internal const int MaxAllowedLicenseLengthForDisplaying = 1024 * 1024; // 1 MB
 
+        /// <summary>
+        /// Only perform the "is indexed" check for a short time after the package was lasted edited or created.
+        /// </summary>
+        private static readonly TimeSpan IsIndexedCheckUntil = TimeSpan.FromDays(1);
+
         private static readonly IReadOnlyList<ReportPackageReason> ReportAbuseReasons = new[]
         {
             ReportPackageReason.ViolatesALicenseIOwn,
@@ -87,8 +92,9 @@ namespace NuGetGallery
         private readonly IAppConfiguration _config;
         private readonly IMessageService _messageService;
         private readonly IPackageService _packageService;
+        private readonly IPackageUpdateService _packageUpdateService;
         private readonly IPackageFileService _packageFileService;
-        private readonly ISearchService _searchService;
+        private readonly ISearchServiceFactory _searchServiceFactory;
         private readonly IUploadFileService _uploadFileService;
         private readonly IUserService _userService;
         private readonly IEntitiesContext _entitiesContext;
@@ -111,13 +117,21 @@ namespace NuGetGallery
         private readonly ILicenseExpressionSplitter _licenseExpressionSplitter;
         private readonly IFeatureFlagService _featureFlagService;
         private readonly IPackageDeprecationService _deprecationService;
+        private readonly IABTestService _abTestService;
+        private readonly IIconUrlProvider _iconUrlProvider;
+        private readonly DisplayPackageViewModelFactory _displayPackageViewModelFactory;
+        private readonly DisplayLicenseViewModelFactory _displayLicenseViewModelFactory;
+        private readonly ListPackageItemViewModelFactory _listPackageItemViewModelFactory;
+        private readonly ManagePackageViewModelFactory _managePackageViewModelFactory;
+        private readonly DeletePackageViewModelFactory _deletePackageViewModelFactory;
 
         public PackagesController(
             IPackageService packageService,
+            IPackageUpdateService packageUpdateService,
             IUploadFileService uploadFileService,
             IUserService userService,
             IMessageService messageService,
-            ISearchService searchService,
+            ISearchServiceFactory searchServiceFactory,
             IPackageFileService packageFileService,
             IEntitiesContext entitiesContext,
             IAppConfiguration config,
@@ -139,13 +153,16 @@ namespace NuGetGallery
             ICoreLicenseFileService coreLicenseFileService,
             ILicenseExpressionSplitter licenseExpressionSplitter,
             IFeatureFlagService featureFlagService,
-            IPackageDeprecationService deprecationService)
+            IPackageDeprecationService deprecationService,
+            IABTestService abTestService,
+            IIconUrlProvider iconUrlProvider)
         {
             _packageService = packageService;
+            _packageUpdateService = packageUpdateService ?? throw new ArgumentNullException(nameof(packageUpdateService));
             _uploadFileService = uploadFileService;
             _userService = userService;
             _messageService = messageService;
-            _searchService = searchService;
+            _searchServiceFactory = searchServiceFactory ?? throw new ArgumentNullException(nameof(searchServiceFactory));
             _packageFileService = packageFileService;
             _entitiesContext = entitiesContext;
             _config = config;
@@ -168,6 +185,14 @@ namespace NuGetGallery
             _licenseExpressionSplitter = licenseExpressionSplitter ?? throw new ArgumentNullException(nameof(licenseExpressionSplitter));
             _featureFlagService = featureFlagService ?? throw new ArgumentNullException(nameof(featureFlagService));
             _deprecationService = deprecationService ?? throw new ArgumentNullException(nameof(deprecationService));
+            _abTestService = abTestService ?? throw new ArgumentNullException(nameof(abTestService));
+            _iconUrlProvider = iconUrlProvider ?? throw new ArgumentNullException(nameof(iconUrlProvider));
+
+            _displayPackageViewModelFactory = new DisplayPackageViewModelFactory(_iconUrlProvider);
+            _displayLicenseViewModelFactory = new DisplayLicenseViewModelFactory(_iconUrlProvider);
+            _listPackageItemViewModelFactory = new ListPackageItemViewModelFactory(_iconUrlProvider);
+            _managePackageViewModelFactory = new ManagePackageViewModelFactory(_iconUrlProvider);
+            _deletePackageViewModelFactory = new DeletePackageViewModelFactory(_iconUrlProvider);
         }
 
         [HttpGet]
@@ -274,7 +299,7 @@ namespace NuGetGallery
             PackageMetadata packageMetadata,
             User currentUser)
         {
-            var validationResult = await _packageUploadService.ValidateBeforeGeneratePackageAsync(packageArchiveReader, packageMetadata);
+            var validationResult = await _packageUploadService.ValidateBeforeGeneratePackageAsync(packageArchiveReader, packageMetadata, currentUser);
             var validationErrorMessage = GetErrorMessageOrNull(validationResult);
             if (validationErrorMessage != null)
             {
@@ -576,6 +601,12 @@ namespace NuGetGallery
             model.Warnings.AddRange(packageContentData.Warnings.Select(w => new JsonValidationMessage(w)));
             model.LicenseFileContents = packageContentData.LicenseFileContents;
             model.LicenseExpressionSegments = packageContentData.LicenseExpressionSegments;
+
+            if (packageContentData.EmbeddedIconInformation != null)
+            {
+                model.IconUrl = $"data:{packageContentData.EmbeddedIconInformation.EmbeddedIconContentType};base64,{Convert.ToBase64String(packageContentData.EmbeddedIconInformation.EmbeddedIconData)}";
+            }
+
             return Json(model);
         }
 
@@ -591,12 +622,14 @@ namespace NuGetGallery
                 PackageMetadata packageMetadata,
                 IReadOnlyList<IValidationMessage> warnings,
                 string licenseFileContents,
-                IReadOnlyCollection<CompositeLicenseExpressionSegmentViewModel> licenseExpressionSegments)
+                IReadOnlyCollection<CompositeLicenseExpressionSegmentViewModel> licenseExpressionSegments,
+                EmbeddedIconInformation embeddedIconInformation)
             {
                 PackageMetadata = packageMetadata;
                 Warnings = warnings;
                 LicenseFileContents = licenseFileContents;
                 LicenseExpressionSegments = licenseExpressionSegments;
+                EmbeddedIconInformation = embeddedIconInformation;
             }
 
             public JsonResult ErrorResult { get; }
@@ -604,6 +637,21 @@ namespace NuGetGallery
             public IReadOnlyList<IValidationMessage> Warnings { get; }
             public string LicenseFileContents { get; }
             public IReadOnlyCollection<CompositeLicenseExpressionSegmentViewModel> LicenseExpressionSegments { get; }
+            public EmbeddedIconInformation EmbeddedIconInformation { get; }
+        }
+
+        private class EmbeddedIconInformation
+        {
+            public EmbeddedIconInformation(
+                string embeddedIconContentType,
+                byte[] embeddedIconData)
+            {
+                EmbeddedIconContentType = embeddedIconContentType;
+                EmbeddedIconData = embeddedIconData;
+            }
+
+            public string EmbeddedIconContentType { get; }
+            public byte[] EmbeddedIconData { get; }
         }
 
         private async Task<PackageContentData> ValidateAndProcessPackageContents(User currentUser, bool isSymbolsPackageUpload)
@@ -612,6 +660,7 @@ namespace NuGetGallery
             string licenseFileContents = null;
             IReadOnlyCollection<CompositeLicenseExpressionSegmentViewModel> licenseExpressionSegments = null;
             PackageMetadata packageMetadata = null;
+            EmbeddedIconInformation embeddedIconInformation = null;
 
             using (Stream uploadedFile = await _uploadFileService.GetUploadFileAsync(currentUser.Key))
             {
@@ -644,7 +693,7 @@ namespace NuGetGallery
 
                 if (!isSymbolsPackageUpload)
                 {
-                    var validationResult = await _packageUploadService.ValidateBeforeGeneratePackageAsync(packageArchiveReader, packageMetadata);
+                    var validationResult = await _packageUploadService.ValidateBeforeGeneratePackageAsync(packageArchiveReader, packageMetadata, currentUser);
                     var validationJsonResult = GetJsonResultOrNull(validationResult);
                     if (validationJsonResult != null)
                     {
@@ -658,6 +707,7 @@ namespace NuGetGallery
                 {
                     licenseFileContents = await GetLicenseFileContentsOrNullAsync(packageMetadata, packageArchiveReader);
                     licenseExpressionSegments = GetLicenseExpressionSegmentsOrNull(packageMetadata.LicenseMetadata);
+                    embeddedIconInformation = await GetEmbeddedIconOrNullAsync(packageMetadata, packageArchiveReader);
                 }
                 catch (Exception ex)
                 {
@@ -668,7 +718,7 @@ namespace NuGetGallery
                 }
             }
 
-            return new PackageContentData(packageMetadata, warnings, licenseFileContents, licenseExpressionSegments);
+            return new PackageContentData(packageMetadata, warnings, licenseFileContents, licenseExpressionSegments, embeddedIconInformation);
         }
 
         private IReadOnlyCollection<CompositeLicenseExpressionSegmentViewModel> GetLicenseExpressionSegmentsOrNull(LicenseMetadata licenseMetadata)
@@ -699,6 +749,43 @@ namespace NuGetGallery
             }
         }
 
+        private static async Task<EmbeddedIconInformation> GetEmbeddedIconOrNullAsync(PackageMetadata packageMetadata, PackageArchiveReader packageArchiveReader)
+        {
+            if (string.IsNullOrWhiteSpace(packageMetadata.IconFile))
+            {
+                return null;
+            }
+
+            var iconFilename = FileNameHelper.GetZipEntryPath(packageMetadata.IconFile);
+            var imageData = await ReadPackageFile(packageArchiveReader, iconFilename);
+            string imageContentType;
+            if (imageData.StartsWithJpegHeader())
+            {
+                imageContentType = CoreConstants.JpegContentType;
+            }
+            else if (imageData.StartsWithPngHeader())
+            {
+                imageContentType = CoreConstants.PngContentType;
+            }
+            else
+            {
+                // we should never get here: wrong file contents should have been caught during validation 
+                throw new InvalidOperationException("The package icon is neither JPEG nor PNG file");
+            }
+
+            return new EmbeddedIconInformation(imageContentType, imageData);
+        }
+
+        private static async Task<byte[]> ReadPackageFile(PackageArchiveReader packageArchiveReader, string filename)
+        {
+            using (var packageFileStream = packageArchiveReader.GetStream(filename))
+            using (var destination = new MemoryStream())
+            {
+                await packageFileStream.CopyToAsync(destination);
+                return destination.ToArray();
+            }
+        }
+
         public virtual async Task<ActionResult> DisplayPackage(string id, string version)
         {
             string normalized = NuGetVersionFormatter.Normalize(version);
@@ -720,7 +807,7 @@ namespace NuGetGallery
                 }
                 else
                 {
-                    package = packages.SingleOrDefault(p => p.NormalizedVersion == NuGetVersionFormatter.Normalize(version));
+                    package = _packageService.FilterExactPackage(packages, version);
                 }
             }
 
@@ -741,16 +828,19 @@ namespace NuGetGallery
             }
 
             var deprecation = _deprecationService.GetDeprecationByPackage(package);
-            var model = new DisplayPackageViewModel(package, currentUser, deprecation);
+            var model = _displayPackageViewModelFactory.Create(package, currentUser, deprecation, await _readMeService.GetReadMeHtmlAsync(package));
 
             model.ValidatingTooLong = _validationService.IsValidatingTooLong(package);
             model.PackageValidationIssues = _validationService.GetLatestPackageValidationIssues(package);
             model.SymbolsPackageValidationIssues = _validationService.GetLatestPackageValidationIssues(model.LatestSymbolsPackage);
             model.IsCertificatesUIEnabled = _contentObjectService.CertificatesConfiguration?.IsUIEnabledForUser(currentUser) ?? false;
             model.IsAtomFeedEnabled = _featureFlagService.IsPackagesAtomFeedEnabled();
-            model.IsPackageDeprecationEnabled = currentUser != null && _featureFlagService.IsManageDeprecationEnabled(currentUser);
+            model.IsPackageDeprecationEnabled = _featureFlagService.IsManageDeprecationEnabled(currentUser, package.PackageRegistration);
 
-            model.ReadMeHtml = await _readMeService.GetReadMeHtmlAsync(package);
+            if(model.IsGitHubUsageEnabled = _featureFlagService.IsGitHubUsageEnabled(currentUser))
+            {
+                model.GitHubDependenciesInformation = _contentObjectService.GitHubUsageConfiguration.GetPackageInformation(id);
+            }
 
             if (!string.IsNullOrWhiteSpace(package.LicenseExpression))
             {
@@ -767,45 +857,59 @@ namespace NuGetGallery
                 }
             }
 
-            var externalSearchService = _searchService as ExternalSearchService;
-            if (_searchService.ContainsAllVersions && externalSearchService != null)
+            var searchService = _searchServiceFactory.GetService();
+            var externalSearchService = searchService as ExternalSearchService;
+            if (searchService.ContainsAllVersions && externalSearchService != null)
             {
-                var isIndexedCacheKey = $"IsIndexed_{package.PackageRegistration.Id}_{package.Version}";
-                var isIndexed = HttpContext.Cache.Get(isIndexedCacheKey) as bool?;
-                if (!isIndexed.HasValue)
+                // A package can be re-indexed when it is created or edited. Determine the latest of these times.
+                var sinceLatestUpsert = package.Created;
+                if (package.LastEdited.HasValue && package.LastEdited > sinceLatestUpsert)
                 {
-                    var normalizedRegistrationId = package.PackageRegistration.Id
-                        .Normalize(NormalizationForm.FormC);
-
-                    var searchFilter = SearchAdaptor.GetSearchFilter(
-                            q: "id:\"" + normalizedRegistrationId + "\" AND version:\"" + package.Version + "\"",
-                        page: 1,
-                        includePrerelease: true,
-                        sortOrder: null,
-                        context: SearchFilter.ODataSearchContext,
-                        semVerLevel: SemVerLevelKey.SemVerLevel2);
-
-                    searchFilter.IncludeAllVersions = true;
-
-                    var results = await externalSearchService.RawSearch(searchFilter);
-
-                    isIndexed = results.Hits > 0;
-
-                    var expiration = Cache.NoAbsoluteExpiration;
-                    if (!isIndexed.Value)
-                    {
-                        expiration = DateTime.UtcNow.Add(TimeSpan.FromSeconds(30));
-                    }
-
-                    HttpContext.Cache.Add(isIndexedCacheKey,
-                        isIndexed,
-                        null,
-                        expiration,
-                        Cache.NoSlidingExpiration,
-                        CacheItemPriority.Default, null);
+                    sinceLatestUpsert = package.LastEdited.Value;
                 }
 
-                model.IsIndexed = isIndexed;
+                // If a package has not been created or edited in quite a while, save the cache memory and search
+                // service load by not checking the indexed status.
+                var isIndexedCheckUntil = sinceLatestUpsert + IsIndexedCheckUntil;
+                if (DateTime.UtcNow < isIndexedCheckUntil)
+                {
+                    var isIndexedCacheKey = $"IsIndexed_{package.PackageRegistration.Id}_{package.Version}";
+                    var isIndexed = HttpContext.Cache.Get(isIndexedCacheKey) as bool?;
+                    if (!isIndexed.HasValue)
+                    {
+                        var normalizedRegistrationId = package.PackageRegistration.Id
+                            .Normalize(NormalizationForm.FormC);
+
+                        var searchFilter = SearchAdaptor.GetSearchFilter(
+                                q: "id:\"" + normalizedRegistrationId + "\" AND version:\"" + package.Version + "\"",
+                            page: 1,
+                            includePrerelease: true,
+                            sortOrder: null,
+                            context: SearchFilter.ODataSearchContext,
+                            semVerLevel: SemVerLevelKey.SemVerLevel2);
+
+                        searchFilter.IncludeAllVersions = true;
+
+                        var results = await externalSearchService.RawSearch(searchFilter);
+
+                        isIndexed = results.Hits > 0;
+
+                        var expiration = isIndexedCheckUntil;
+                        if (!isIndexed.Value)
+                        {
+                            expiration = DateTime.UtcNow.Add(TimeSpan.FromSeconds(30));
+                        }
+
+                        HttpContext.Cache.Add(isIndexedCacheKey,
+                            isIndexed,
+                            null,
+                            expiration,
+                            Cache.NoSlidingExpiration,
+                            CacheItemPriority.Default, null);
+                    }
+
+                    model.IsIndexed = isIndexed;
+                }
             }
 
             ViewBag.FacebookAppID = _config.FacebookAppId;
@@ -850,18 +954,14 @@ namespace NuGetGallery
             // the last edited or created package is used as the feed timestamp
             var lastUpdatedPackage = packageVersions.Max(x => x.LastEdited ?? x.Created);
 
-            SyndicationFeed feed = new SyndicationFeed()
+            var feed = new SyndicationFeed()
             {
                 Id = Url.Package(packageRegistration.Id, version: null, relativeUrl: false),
                 Title = SyndicationContent.CreatePlaintextContent($"{_config.Brand} Feed for {packageRegistration.Id}"),
                 Description = SyndicationContent.CreatePlaintextContent(newestVersionPackage.Description),
-                LastUpdatedTime = lastUpdatedPackage
+                LastUpdatedTime = lastUpdatedPackage,
+                ImageUrl = _iconUrlProvider.GetIconUrl(newestVersionPackage),
             };
-
-            if (!string.IsNullOrWhiteSpace(newestVersionPackage.IconUrl))
-            {
-                feed.ImageUrl = new Uri(newestVersionPackage.IconUrl);
-            }
 
             List<SyndicationItem> feedItems = new List<SyndicationItem>();
 
@@ -942,7 +1042,7 @@ namespace NuGetGallery
                 throw;
             }
 
-            var model = new DisplayLicenseViewModel(package, licenseExpressionSegments, licenseFileContents);
+            var model = _displayLicenseViewModelFactory.Create(package, licenseExpressionSegments, licenseFileContents);
 
             return View(model);
         }
@@ -972,10 +1072,14 @@ namespace NuGetGallery
 
             SearchResults results;
 
+            var isPreviewSearchEnabled = _abTestService.IsPreviewSearchEnabled(GetCurrentUser());
+            var searchService = isPreviewSearchEnabled ? _searchServiceFactory.GetPreviewService() : _searchServiceFactory.GetService();
+
             // fetch most common query from cache to relieve load on the search service
             if (string.IsNullOrEmpty(q) && page == 1 && includePrerelease)
             {
-                var cachedResults = HttpContext.Cache.Get("DefaultSearchResults");
+                var cacheKey = isPreviewSearchEnabled ? "DefaultPreviewSearchResults" : "DefaultSearchResults";
+                var cachedResults = HttpContext.Cache.Get(cacheKey);
                 if (cachedResults == null)
                 {
                     var searchFilter = SearchAdaptor.GetSearchFilter(
@@ -986,11 +1090,11 @@ namespace NuGetGallery
                         context: SearchFilter.UISearchContext,
                         semVerLevel: SemVerLevelKey.SemVerLevel2);
 
-                    results = await _searchService.Search(searchFilter);
+                    results = await searchService.Search(searchFilter);
 
                     // note: this is a per instance cache
                     HttpContext.Cache.Add(
-                        "DefaultSearchResults",
+                        cacheKey,
                         results,
                         null,
                         DateTime.UtcNow.AddMinutes(10),
@@ -1013,7 +1117,7 @@ namespace NuGetGallery
                     context: SearchFilter.UISearchContext,
                     semVerLevel: SemVerLevelKey.SemVerLevel2);
 
-                results = await _searchService.Search(searchFilter);
+                results = await searchService.Search(searchFilter);
             }
 
             int totalHits = results.Hits;
@@ -1023,16 +1127,21 @@ namespace NuGetGallery
                 totalHits = 0;
             }
 
+            var currentUser = GetCurrentUser();
+            var items = results.Data
+                .Select(pv => _listPackageItemViewModelFactory.Create(pv, currentUser))
+                .ToList();
+
             var viewModel = new PackageListViewModel(
-                results.Data,
-                GetCurrentUser(),
+                items,
                 results.IndexTimestampUtc,
                 q,
                 totalHits,
                 page - 1,
                 GalleryConstants.DefaultPackageListPageSize,
                 Url,
-                includePrerelease);
+                includePrerelease,
+                isPreviewSearchEnabled);
 
             ViewBag.SearchTerm = q;
 
@@ -1459,10 +1568,11 @@ namespace NuGetGallery
             // Load all versions of the package.
             var packages = _packageService.FindPackagesById(
                 id, PackageDeprecationFieldsToInclude.DeprecationAndRelationships);
+
             if (version != null)
             {
                 // Try to find the exact version if it was specified.
-                package = packages.SingleOrDefault(p => p.NormalizedVersion == NuGetVersionFormatter.Normalize(version));
+                package = _packageService.FilterExactPackage(packages, version);
             }
 
             if (package == null)
@@ -1478,13 +1588,13 @@ namespace NuGetGallery
             }
 
             var currentUser = GetCurrentUser();
-            var model = new ManagePackageViewModel(
+            var model = _managePackageViewModelFactory.Create(
                 package,
                 GetCurrentUser(),
                 ReportMyPackageReasons,
                 Url,
                 await _readMeService.GetReadMeMdAsync(package),
-                _featureFlagService.IsManageDeprecationEnabled(currentUser));
+                _featureFlagService.IsManageDeprecationEnabled(currentUser, package.PackageRegistration));
 
             if (!model.CanEdit && !model.CanManageOwners && !model.CanUnlistOrRelist)
             {
@@ -1506,7 +1616,7 @@ namespace NuGetGallery
             if (version != null)
             {
                 // Try to find the exact version if it was specified.
-                package = packages.SingleOrDefault(p => p.NormalizedVersion == NuGetVersionFormatter.Normalize(version));
+                package = _packageService.FilterExactPackage(packages, version);
             }
 
             if (package == null)
@@ -1527,7 +1637,7 @@ namespace NuGetGallery
                 return HttpForbidden();
             }
 
-            var model = new DeletePackageViewModel(package, currentUser, DeleteReasons);
+            var model = _deletePackageViewModelFactory.Create(package, currentUser, DeleteReasons);
 
             // Fetch all versions of the package with symbols.
             var versionsWithSymbols = packages
@@ -1541,11 +1651,13 @@ namespace NuGetGallery
                     Text = PackageHelper.GetSelectListText(versionWithSymbols),
                     Value = Url.DeleteSymbolsPackage(new TrivialPackageVersionModel(versionWithSymbols)),
                     Selected = package == versionWithSymbols
-                });
+                }).ToList();
 
             return View(model);
         }
 
+        [HttpPost]
+        [ValidateAntiForgeryToken]
         [UIAuthorize(Roles = "Admins")]
         [RequiresAccountConfirmation("reflow a package")]
         public virtual async Task<ActionResult> Reflow(string id, string version)
@@ -1581,6 +1693,8 @@ namespace NuGetGallery
             return SafeRedirect(Url.Package(id, version));
         }
 
+        [HttpPost]
+        [ValidateAntiForgeryToken]
         [UIAuthorize(Roles = "Admins")]
         [RequiresAccountConfirmation("revalidate a package")]
         public virtual async Task<ActionResult> Revalidate(string id, string version)
@@ -1608,7 +1722,8 @@ namespace NuGetGallery
             return SafeRedirect(Url.Package(id, version));
         }
 
-
+        [HttpPost]
+        [ValidateAntiForgeryToken]
         [UIAuthorize(Roles = "Admins")]
         [RequiresAccountConfirmation("revalidate a symbols package")]
         public virtual async Task<ActionResult> RevalidateSymbols(string id, string version)
@@ -1808,8 +1923,39 @@ namespace NuGetGallery
         [ValidateAntiForgeryToken]
         public virtual async Task<ActionResult> UpdateListed(string id, string version, bool? listed)
         {
-            // Edit does exactly the same thing that Delete used to do... REUSE ALL THE CODE!
-            return await Edit(id, version, listed, Url.Package);
+            var package = _packageService.FindPackageByIdAndVersionStrict(id, version);
+            if (package == null)
+            {
+                return HttpNotFound();
+            }
+
+            if (ActionsRequiringPermissions.EditPackage.CheckPermissionsOnBehalfOfAnyAccount(GetCurrentUser(), package) != PermissionsCheckResult.Allowed)
+            {
+                return HttpForbidden();
+            }
+
+            if (package.PackageRegistration.IsLocked)
+            {
+                return new HttpStatusCodeResult(403, string.Format(CultureInfo.CurrentCulture, Strings.PackageIsLocked, package.PackageRegistration.Id));
+            }
+
+            string action;
+            if (!(listed ?? false))
+            {
+                action = "unlisted";
+                await _packageUpdateService.MarkPackageUnlistedAsync(package);
+            }
+            else
+            {
+                action = "listed";
+                await _packageUpdateService.MarkPackageListedAsync(package);
+            }
+            TempData["Message"] = string.Format(
+                CultureInfo.CurrentCulture,
+                "The package has been {0}. It may take several hours for this change to propagate through our system.",
+                action);
+
+            return Redirect(Url.ManagePackage(new TrivialPackageVersionModel(package)));
         }
 
         [UIAuthorize]
@@ -1872,29 +2018,54 @@ namespace NuGetGallery
                 }
             }
 
+            TempData["Message"] = "Your package's documentation has been updated.";
+
             return Json(new
             {
-                location = returnUrl ?? Url.Package(id, version)
+                location = returnUrl ?? Url.ManagePackage(new TrivialPackageVersionModel(id, version))
             });
         }
 
         [HttpGet]
         [UIAuthorize]
         [RequiresAccountConfirmation("accept ownership of a package")]
+        public virtual Task<ActionResult> ConfirmPendingOwnershipRequestRedirect(string id, string username, string token)
+        {
+            return HandleOwnershipRequest(id, username, token, redirect: true);
+        }
+
+        [HttpPost]
+        [UIAuthorize]
+        [ValidateAntiForgeryToken]
+        [RequiresAccountConfirmation("accept ownership of a package")]
         public virtual Task<ActionResult> ConfirmPendingOwnershipRequest(string id, string username, string token)
         {
-            return HandleOwnershipRequest(id, username, token, accept: true);
+            return HandleOwnershipRequest(id, username, token, redirect: false, accept: true);
         }
 
         [HttpGet]
         [UIAuthorize]
         [RequiresAccountConfirmation("reject ownership of a package")]
-        public virtual Task<ActionResult> RejectPendingOwnershipRequest(string id, string username, string token)
+        public virtual Task<ActionResult> RejectPendingOwnershipRequestRedirect(string id, string username, string token)
         {
-            return HandleOwnershipRequest(id, username, token, accept: false);
+            return HandleOwnershipRequest(id, username, token, redirect: true);
         }
 
-        private async Task<ActionResult> HandleOwnershipRequest(string id, string username, string token, bool accept)
+        [HttpPost]
+        [UIAuthorize]
+        [ValidateAntiForgeryToken]
+        [RequiresAccountConfirmation("reject ownership of a package")]
+        public virtual Task<ActionResult> RejectPendingOwnershipRequest(string id, string username, string token)
+        {
+            return HandleOwnershipRequest(id, username, token, redirect: false, accept: false);
+        }
+
+        private async Task<ActionResult> HandleOwnershipRequest(
+            string id,
+            string username,
+            string token,
+            bool redirect,
+            bool accept = false)
         {
             if (string.IsNullOrEmpty(token))
             {
@@ -1926,6 +2097,11 @@ namespace NuGetGallery
                 return View("ConfirmOwner", new PackageOwnerConfirmationModel(id, user.Username, ConfirmOwnershipResult.Failure));
             }
 
+            if (redirect)
+            {
+                return Redirect(Url.ManageMyReceivedPackageOwnershipRequests());
+            }
+            
             if (accept)
             {
                 await _packageOwnershipManagementService.AddPackageOwnerAsync(package, user);
@@ -1950,7 +2126,7 @@ namespace NuGetGallery
         [HttpGet]
         [UIAuthorize]
         [RequiresAccountConfirmation("cancel pending ownership request")]
-        public virtual async Task<ActionResult> CancelPendingOwnershipRequest(string id, string requestingUsername, string pendingUsername)
+        public virtual ActionResult CancelPendingOwnershipRequest(string id, string requestingUsername, string pendingUsername)
         {
             var package = _packageService.FindPackageRegistrationById(id);
             if (package == null)
@@ -1981,12 +2157,7 @@ namespace NuGetGallery
                 return HttpNotFound();
             }
 
-            await _packageOwnershipManagementService.DeletePackageOwnershipRequestAsync(package, pendingUser);
-
-            var emailMessage = new PackageOwnershipRequestCanceledMessage(_config, requestingUser, pendingUser, package);
-            await _messageService.SendMessageAsync(emailMessage);
-
-            return View("ConfirmOwner", new PackageOwnerConfirmationModel(id, pendingUsername, ConfirmOwnershipResult.Cancelled));
+            return Redirect(Url.ManagePackageOwnership(id));
         }
 
         /// <summary>
@@ -2007,45 +2178,6 @@ namespace NuGetGallery
                 return _messageService.SendMessageAsync(emailMessage);
             });
             return Task.WhenAll(tasks);
-        }
-
-        internal virtual async Task<ActionResult> Edit(string id, string version, bool? listed, Func<Package, bool, string> urlFactory)
-        {
-            var package = _packageService.FindPackageByIdAndVersionStrict(id, version);
-            if (package == null)
-            {
-                return HttpNotFound();
-            }
-
-            if (ActionsRequiringPermissions.EditPackage.CheckPermissionsOnBehalfOfAnyAccount(GetCurrentUser(), package) != PermissionsCheckResult.Allowed)
-            {
-                return HttpForbidden();
-            }
-
-            if (package.PackageRegistration.IsLocked)
-            {
-                return new HttpStatusCodeResult(403, string.Format(CultureInfo.CurrentCulture, Strings.PackageIsLocked, package.PackageRegistration.Id));
-            }
-
-            string action;
-            if (!(listed ?? false))
-            {
-                action = "unlisted";
-                await _packageService.MarkPackageUnlistedAsync(package);
-            }
-            else
-            {
-                action = "listed";
-                await _packageService.MarkPackageListedAsync(package);
-            }
-            TempData["Message"] = string.Format(
-                CultureInfo.CurrentCulture,
-                "The package has been {0}. It may take several hours for this change to propagate through our system.",
-                action);
-
-            // Update the index
-            _indexingService.UpdatePackage(package);
-            return Redirect(urlFactory(package, /*relativeUrl:*/ true));
         }
 
         [UIAuthorize]
@@ -2325,7 +2457,7 @@ namespace NuGetGallery
                 }
 
                 // Perform all the validations we can before adding the package to the entity context.
-                var beforeValidationResult = await _packageUploadService.ValidateBeforeGeneratePackageAsync(packageArchiveReader, packageMetadata);
+                var beforeValidationResult = await _packageUploadService.ValidateBeforeGeneratePackageAsync(packageArchiveReader, packageMetadata, currentUser);
                 var beforeValidationJsonResult = GetJsonResultOrNull(beforeValidationResult);
                 if (beforeValidationJsonResult != null)
                 {
@@ -2405,7 +2537,7 @@ namespace NuGetGallery
 
                 if (!formData.Listed)
                 {
-                    await _packageService.MarkPackageUnlistedAsync(package, commitChanges: false);
+                    await _packageUpdateService.MarkPackageUnlistedAsync(package, commitChanges: false, updateIndex: false);
                 }
 
                 // Commit the package to storage and to the database.
@@ -2520,7 +2652,7 @@ namespace NuGetGallery
                     httpStatusCode = HttpStatusCode.Conflict;
                     break;
                 case SymbolPackageValidationResultType.UserNotAllowedToUpload:
-                    httpStatusCode = HttpStatusCode.Unauthorized;
+                    httpStatusCode = HttpStatusCode.Forbidden;
                     break;
                 default:
                     throw new NotImplementedException($"The symbol package validation result type {validationResult.Type} is not supported.");
@@ -2605,8 +2737,8 @@ namespace NuGetGallery
 
             try
             {
-                var readMeHtml = await _readMeService.GetReadMeHtmlAsync(formData, Request.ContentEncoding);
-                return Json(new[] { readMeHtml });
+                var readMeResult = await _readMeService.GetReadMeHtmlAsync(formData, Request.ContentEncoding);
+                return Json(readMeResult);
             }
             catch (Exception ex)
             {

@@ -5,7 +5,6 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
-using System.Linq;
 
 namespace NuGet.Services.Entities
 {
@@ -82,6 +81,8 @@ namespace NuGet.Services.Entities
         public long? ExpirationTicks { get; set; }
 
         public DateTime? LastUsed { get; set; }
+
+        public CredentialRevocationSource? RevocationSourceKey { get; set; }
 
         public virtual User User { get; set; }
 

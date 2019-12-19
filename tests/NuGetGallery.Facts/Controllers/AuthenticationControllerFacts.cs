@@ -95,12 +95,14 @@ namespace NuGetGallery.Controllers
                 ResultAssert.IsSafeRedirectTo(result, "theReturnUrl");
             }
 
-            [Fact]
-            public void WillNotRedirectToTheReturnUrlWhenReturnUrlContainsAccount()
+            [Theory]
+            [InlineData("account/profile")]
+            [InlineData("Admin/SupportRequest")]
+            public void WillNotRedirectToTheReturnUrlWhenReturnUrlContains(string returnUrl)
             {
                 var controller = GetController<AuthenticationController>();
 
-                var result = controller.LogOff("account/profile");
+                var result = controller.LogOff(returnUrl);
                 ResultAssert.IsSafeRedirectTo(result, null);
             }
         }
@@ -1525,7 +1527,8 @@ namespace NuGetGallery.Controllers
                     .CompletesWith(new AuthenticateExternalLoginResult()
                     {
                         ExternalIdentity = new ClaimsIdentity(),
-                        Authentication = authUser
+                        Authentication = authUser,
+                        Credential = cred
                     });
 
                 GetMock<AuthenticationService>()
@@ -1563,7 +1566,8 @@ namespace NuGetGallery.Controllers
                     .CompletesWith(new AuthenticateExternalLoginResult()
                     {
                         ExternalIdentity = new ClaimsIdentity(),
-                        Authentication = authUser
+                        Authentication = authUser,
+                        Credential = cred
                     });
 
                 GetMock<AuthenticationService>()
@@ -1634,7 +1638,7 @@ namespace NuGetGallery.Controllers
             [Theory]
             [InlineData("MicrosoftAccount", true)]
             [InlineData("AzureActiveDirectory", false)]
-            public async Task ShouldUpdateMultiFactorSettingForMicrosoftAccounts(string credType, bool enabled2FA)
+            public async Task ShouldUpdateMultiFactorSettingForExternalAccounts(string credType, bool showMessage)
             {
                 // Arrange
                 var email = "test@email.com";
@@ -1662,7 +1666,7 @@ namespace NuGetGallery.Controllers
                     .Returns(Task.CompletedTask);
 
                 userServiceMock
-                    .Setup(x => x.ChangeMultiFactorAuthentication(authUser.User, true))
+                    .Setup(x => x.ChangeMultiFactorAuthentication(authUser.User, true, null))
                     .Returns(Task.CompletedTask)
                     .Verifiable();
 
@@ -1673,13 +1677,115 @@ namespace NuGetGallery.Controllers
 
                 // Assert
                 authServiceMock.VerifyAll();
-                userServiceMock.Verify(x => x.ChangeMultiFactorAuthentication(authUser.User, true), enabled2FA ? Times.Once() : Times.Never());
-                if (enabled2FA)
+                userServiceMock.Verify(x => x.ChangeMultiFactorAuthentication(authUser.User, true, It.IsAny<string>()), Times.Once());
+                if (showMessage)
                 {
                     Assert.Equal(Strings.MultiFactorAuth_LoginUpdate, controller.TempData["Message"]);
                 }
 
                 ResultAssert.IsSafeRedirectTo(result, returnUrl);
+            }
+
+            [Theory]
+            [InlineData("MicrosoftAccount", true)]
+            [InlineData("AzureActiveDirectory", false)]
+            public async Task ShouldAskToEnableMultiFactorSettingForMicrosoftAccounts(string credType, bool shouldAskToEnable2FA)
+            {
+                // Arrange
+                var email = "test@email.com";
+                var cred = new CredentialBuilder().CreateExternalCredential(credType, "blorg", "Bloog");
+                var user = Get<Fakes>().CreateUser("test", cred);
+                user.EnableMultiFactorAuthentication = false;
+                var authServiceMock = GetMock<AuthenticationService>(); // Force a mock to be created
+                var controller = GetController<AuthenticationController>();
+                var userServiceMock = GetMock<IUserService>();
+                var authUser = new AuthenticatedUser(user, cred);
+
+                authServiceMock
+                    .Setup(x => x.AuthenticateExternalLogin(controller.OwinContext))
+                    .CompletesWith(new AuthenticateExternalLoginResult()
+                    {
+                        ExternalIdentity = new ClaimsIdentity(),
+                        Credential = cred,
+                        Authentication = authUser,
+                        Authenticator = new AzureActiveDirectoryV2Authenticator(),
+                        LoginDetails = new ExternalLoginSessionDetails(email, usedMultiFactorAuthentication: false)
+                    });
+
+                authServiceMock
+                    .Setup(x => x.CreateSessionAsync(controller.OwinContext, authUser, It.IsAny<bool>()))
+                    .Returns(Task.CompletedTask);
+
+                userServiceMock
+                    .Setup(x => x.ChangeMultiFactorAuthentication(authUser.User, true, null))
+                    .Returns(Task.CompletedTask)
+                    .Verifiable();
+
+                var returnUrl = "theReturnUrl";
+
+                // Act
+                var result = await controller.LinkExternalAccount(returnUrl);
+
+                // Assert
+                authServiceMock.VerifyAll();
+                userServiceMock.Verify(x => x.ChangeMultiFactorAuthentication(authUser.User, true, It.IsAny<string>()), Times.Never());
+                if (shouldAskToEnable2FA)
+                {
+                    Assert.Equal(true, controller.TempData[GalleryConstants.AskUserToEnable2FA]);
+                }
+
+                ResultAssert.IsSafeRedirectTo(result, returnUrl);
+            }
+
+            [Theory]
+            [InlineData("AzureActiveDirectory", false)]
+            [InlineData("AzureActiveDirectory", true)]
+            public async Task GivenAssociatedLocalAdminUser_ItVerifiesTheEnforcedTenantId(string providerUsedForLogin, bool shouldError)
+            {
+                // Arrange
+                var enforcedTenantId = "Some-Tenant-Id";
+
+                var configurationService = GetConfigurationService();
+                configurationService.Current.ConfirmEmailAddresses = false;
+                configurationService.Current.EnforcedTenantIdForAdmin = enforcedTenantId;
+
+                var fakes = Get<Fakes>();
+                GetMock<AuthenticationService>(); // Force a mock to be created
+                var controller = GetController<AuthenticationController>();
+                var cred = new CredentialBuilder().CreateExternalCredential(providerUsedForLogin, "blorg", "Bloog", tenantId: shouldError ? "non-enforced-tenant-id" : enforcedTenantId);
+                var authUser = new AuthenticatedUser(
+                    fakes.CreateUser("test", cred),
+                    cred);
+
+                authUser.User.Roles.Add(new Role { Name = CoreConstants.AdminRoleName });
+
+                GetMock<AuthenticationService>()
+                    .Setup(x => x.AuthenticateExternalLogin(controller.OwinContext))
+                    .CompletesWith(new AuthenticateExternalLoginResult()
+                    {
+                        ExternalIdentity = new ClaimsIdentity(),
+                        Authentication = authUser,
+                        Credential = cred
+                    });
+
+                GetMock<AuthenticationService>()
+                    .Setup(x => x.CreateSessionAsync(controller.OwinContext, authUser, false))
+                    .Returns(Task.FromResult(0))
+                    .Verifiable();
+
+                // Act
+                var result = await controller.LinkExternalAccount("theReturnUrl");
+
+                // Assert
+                if (shouldError)
+                {
+                    var expectedMessage = string.Format(Strings.SiteAdminNotLoggedInWithRequiredTenant, enforcedTenantId);
+                    VerifyExternalLinkExpiredResult(controller, result, expectedMessage);
+                } else
+                {
+                    ResultAssert.IsSafeRedirectTo(result, "theReturnUrl");
+                    GetMock<AuthenticationService>().VerifyAll();
+                }
             }
 
             [Theory]
@@ -1709,7 +1815,8 @@ namespace NuGetGallery.Controllers
                     .CompletesWith(new AuthenticateExternalLoginResult()
                     {
                         ExternalIdentity = new ClaimsIdentity(),
-                        Authentication = authUser
+                        Authentication = authUser,
+                        Credential = cred
                     });
 
                 if (shouldChallenge)
@@ -2249,7 +2356,7 @@ namespace NuGetGallery.Controllers
         {
             expectedMessage = expectedMessage ?? Strings.ExternalAccountLinkExpired;
             ResultAssert.IsRedirect(result, permanent: false, url: controller.Url.LogOn(relativeUrl: false));
-            Assert.Equal(expectedMessage, controller.TempData["Message"]);
+            Assert.Equal(expectedMessage, controller.TempData["ErrorMessage"]);
         }
 
         private static void EnableAllAuthenticators(AuthenticationService authService)

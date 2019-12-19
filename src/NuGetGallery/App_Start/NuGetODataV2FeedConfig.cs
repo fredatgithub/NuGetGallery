@@ -4,7 +4,6 @@
 using System;
 using System.Linq;
 using System.Web.Http;
-using System.Web.Http.OData.Batch;
 using System.Web.Http.OData.Builder;
 using System.Web.Http.OData.Extensions;
 using System.Web.Http.OData.Routing.Conventions;
@@ -39,7 +38,11 @@ namespace NuGetGallery
                     .ToList();
 
             // Add OData routes
-            config.Routes.MapODataServiceRoute("api-v2-odata", "api/v2", model, new CountODataPathHandler(), conventions,
+            config.Routes.MapODataServiceRoute("api-v2-odata", "api/v2", model,
+                new CountODataPathHandler(), conventions,
+                new ODataServiceVersionHeaderPropagatingBatchHandler(GlobalConfiguration.DefaultServer));
+            config.Routes.MapODataServiceRoute("api-v2curated-odata", "api/v2/curated-feeds/{curatedFeedName}", model,
+                new CountODataPathHandler(), conventions,
                 new ODataServiceVersionHeaderPropagatingBatchHandler(GlobalConfiguration.DefaultServer));
         }
 

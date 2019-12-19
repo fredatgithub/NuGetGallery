@@ -1,4 +1,5 @@
-<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="14.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <ThirdPartyBinaries Include="AnglicanGeek.MarkdownMailer.dll" />
     <ThirdPartyBinaries Include="Autofac.dll" />
@@ -8,6 +9,8 @@
     <ThirdPartyBinaries Include="Autofac.Integration.Owin.dll" />
     <ThirdPartyBinaries Include="Autofac.Integration.WebApi.dll" />
     <ThirdPartyBinaries Include="CommonMark.dll" />
+    <ThirdPartyBinaries Include="CsvHelper.dll" />
+    <ThirdPartyBinaries Include="Dapper.StrongName.dll" />
     <ThirdPartyBinaries Include="DynamicData.EFCodeFirstProvider.dll" />
     <ThirdPartyBinaries Include="Elmah.dll" />
     <ThirdPartyBinaries Include="ICSharpCode.SharpZipLib.dll" />
@@ -27,6 +30,8 @@
     <ThirdPartyBinaries Include="Microsoft.ApplicationServer.Caching.Client.dll" />
     <ThirdPartyBinaries Include="Microsoft.ApplicationServer.Caching.Core.dll" />
     <ThirdPartyBinaries Include="Microsoft.AspNet.WebApi.MessageHandlers.Compression.dll" />
+    <ThirdPartyBinaries Include="Microsoft.CookieCompliance.dll" />
+    <ThirdPartyBinaries Include="Microsoft.CookieCompliance.NetStd.dll" />
     <ThirdPartyBinaries Include="Newtonsoft.Json.dll" />
     <ThirdPartyBinaries Include="Polly.dll" />
     <ThirdPartyBinaries Include="Polly.Extensions.Http.dll" />
@@ -47,3 +52,4 @@
     <ThirdPartyBinaries Include="WebBackgrounder.EntityFramework.dll" />
   </ItemGroup>
 </Project>
+

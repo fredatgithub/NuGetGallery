@@ -1,7 +1,9 @@
 ﻿// Copyright (c) .NET Foundation. All rights reserved.
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
+using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.WindowsAzure.Storage;
 using Microsoft.WindowsAzure.Storage.Blob;
 
 namespace NuGetGallery
@@ -13,6 +15,29 @@ namespace NuGetGallery
         public CloudBlobContainerWrapper(CloudBlobContainer blobContainer)
         {
             _blobContainer = blobContainer;
+        }
+
+        public async Task<ISimpleBlobResultSegment> ListBlobsSegmentedAsync(
+            string prefix,
+            bool useFlatBlobListing,
+            BlobListingDetails blobListingDetails,
+            int? maxResults,
+            BlobContinuationToken blobContinuationToken,
+            BlobRequestOptions options,
+            OperationContext operationContext,
+            CancellationToken cancellationToken)
+        {
+            var segment = await _blobContainer.ListBlobsSegmentedAsync(
+                prefix,
+                useFlatBlobListing,
+                blobListingDetails,
+                maxResults,
+                blobContinuationToken,
+                options,
+                operationContext,
+                cancellationToken);
+
+            return new BlobResultSegmentWrapper(segment);
         }
 
         public Task CreateIfNotExistAsync()
@@ -34,9 +59,9 @@ namespace NuGetGallery
             return new CloudBlobWrapper(_blobContainer.GetBlockBlobReference(blobAddressUri));
         }
 
-        public Task<bool> ExistsAsync()
+        public Task<bool> ExistsAsync(BlobRequestOptions blobRequestOptions, OperationContext context)
         {
-            return _blobContainer.ExistsAsync();
+            return _blobContainer.ExistsAsync(blobRequestOptions, context);
         }
 
         public async Task<bool> DeleteIfExistsAsync()

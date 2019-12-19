@@ -1,12 +1,8 @@
 ﻿// Copyright (c) .NET Foundation. All rights reserved.
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 using System;
-using System.Collections.Generic;
 using System.Globalization;
-using System.Linq;
-using System.Text;
 using NuGetGallery.Configuration;
-using NuGetGallery.Diagnostics;
 
 namespace NuGetGallery.Areas.Admin.Models
 {
@@ -18,7 +14,6 @@ namespace NuGetGallery.Areas.Admin.Models
         public long IndexSize { get; set; }
         public bool IsLocal { get; set; }
         public LuceneIndexLocation Location { get; set; }
-        public PerfCounters.PerfStats QueryStats { get; set; }
 
         public string FormatIndexSize()
         {

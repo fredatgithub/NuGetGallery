@@ -42,6 +42,18 @@ namespace NuGetGallery
             }
         }
 
+        public DbSet<PackageDeprecation> Deprecations
+        {
+            get
+            {
+                return Set<PackageDeprecation>();
+            }
+            set
+            {
+                throw new NotSupportedException();
+            }
+        }
+
         public DbSet<Credential> Credentials
         {
             get
@@ -150,11 +162,11 @@ namespace NuGetGallery
             }
         }
 
-        public DbSet<Cve> Cves
+        public DbSet<PackageVulnerability> Vulnerabilities
         {
             get
             {
-                return Set<Cve>();
+                return Set<PackageVulnerability>();
             }
             set
             {
@@ -162,11 +174,11 @@ namespace NuGetGallery
             }
         }
 
-        public DbSet<Cwe> Cwes
+        public DbSet<VulnerablePackageVersionRange> VulnerableRanges
         {
             get
             {
-                return Set<Cwe>();
+                return Set<VulnerablePackageVersionRange>();
             }
             set
             {
@@ -206,9 +218,15 @@ namespace NuGetGallery
             throw new NotSupportedException();
         }
 
+        private IDatabase _database;
         public IDatabase GetDatabase()
         {
-            throw new NotSupportedException();
+            return _database ?? throw new NotSupportedException();
+        }
+
+        public void SetupDatabase(IDatabase database)
+        {
+            _database = database;
         }
 
         public static DbSet<T> CreateDbSet<T>() where T : class
@@ -253,13 +271,23 @@ namespace NuGetGallery
 
             mockSet
                 .Setup(x => x.RemoveRange(It.IsAny<IEnumerable<T>>()))
-                .Callback<IEnumerable<T>>(x => x.Select(y => data.Remove(y)));
+                .Callback<IEnumerable<T>>(x =>
+                {
+                    foreach (var item in x)
+                    {
+                        data.Remove(item);
+                    }
+                });
 
             mockSet
                 .Setup(x => x.Local)
                 .Returns(() => new ObservableCollection<T>(data));
 
             return mockSet.Object;
+        }
+
+        public void Dispose()
+        {
         }
     }
 }
