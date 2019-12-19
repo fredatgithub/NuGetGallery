@@ -18,6 +18,16 @@ namespace NuGet.VerifyMicrosoftPackage.Fakes
             throw new NotImplementedException();
         }
 
+        public void TrackABTestEnrollmentInitialized(int schemaVersion, int previewSearchBucket)
+        {
+            throw new NotImplementedException();
+        }
+
+        public void TrackABTestEvaluated(string name, bool isActive, bool isAuthenticated, int testBucket, int testPercentage)
+        {
+            throw new NotImplementedException();
+        }
+
         public void TrackAccountDeletionCompleted(User deletedUser, User deletedBy, bool success)
         {
             throw new NotImplementedException();
@@ -43,7 +53,27 @@ namespace NuGet.VerifyMicrosoftPackage.Fakes
             throw new NotImplementedException();
         }
 
+        public void TrackDownloadCountDecreasedDuringRefresh(string packageId, string packageVersion, long oldCount, long newCount)
+        {
+            throw new NotImplementedException();
+        }
+
+        public void TrackDownloadJsonRefreshDuration(long milliseconds)
+        {
+            throw new NotImplementedException();
+        }
+
         public void TrackException(Exception exception, Action<Dictionary<string, string>> addProperties)
+        {
+            throw new NotImplementedException();
+        }
+
+        public void TrackGetPackageDownloadCountFailed(string packageId, string packageVersion)
+        {
+            throw new NotImplementedException();
+        }
+
+        public void TrackGetPackageRegistrationDownloadCountFailed(string packageId)
         {
             throw new NotImplementedException();
         }
@@ -79,6 +109,11 @@ namespace NuGet.VerifyMicrosoftPackage.Fakes
         }
 
         public void TrackMetricForSearchOnRetry(string searchName, Exception exception, string correlationId, string uri, string circuitBreakerStatus)
+        {
+            throw new NotImplementedException();
+        }
+
+        public void TrackMetricForSearchOnTimeout(string searchName, string correlationId, string uri, string circuitBreakerStatus)
         {
             throw new NotImplementedException();
         }
@@ -158,6 +193,16 @@ namespace NuGet.VerifyMicrosoftPackage.Fakes
             throw new NotImplementedException();
         }
 
+        public void TrackPackageDeprecate(IReadOnlyList<Package> packages, PackageDeprecationStatus status, PackageRegistration alternateRegistration, Package alternatePackage, bool hasCustomMessage)
+        {
+            throw new NotImplementedException();
+        }
+
+        public void TrackPackageDownloadCountDecreasedFromGallery(string packageId, string packageVersion, long galleryCount, long jsonCount)
+        {
+            throw new NotImplementedException();
+        }
+
         public void TrackPackageHardDeleteReflow(string packageId, string packageVersion)
         {
             throw new NotImplementedException();
@@ -208,6 +253,11 @@ namespace NuGet.VerifyMicrosoftPackage.Fakes
             throw new NotImplementedException();
         }
 
+        public void TrackPackageRegistrationDownloadCountDecreasedFromGallery(string packageId, long galleryCount, long jsonCount)
+        {
+            throw new NotImplementedException();
+        }
+
         public void TrackPackageReupload(Package package)
         {
             throw new NotImplementedException();
@@ -229,6 +279,16 @@ namespace NuGet.VerifyMicrosoftPackage.Fakes
         }
 
         public void TrackRequiredSignerSet(string packageId)
+        {
+            throw new NotImplementedException();
+        }
+
+        public void TrackSearchSideBySide(string searchTerm, bool oldSuccess, int oldHits, bool newSuccess, int newHits)
+        {
+            throw new NotImplementedException();
+        }
+
+        public void TrackSearchSideBySideFeedback(string searchTerm, int oldHits, int newHits, string betterSide, string mostRelevantPackage, string expectedPackages, bool hasComments, bool hasEmailAddress)
         {
             throw new NotImplementedException();
         }
@@ -264,6 +324,11 @@ namespace NuGet.VerifyMicrosoftPackage.Fakes
         }
 
         public void TrackUserChangedMultiFactorAuthentication(User user, bool enabledMultiFactorAuth)
+        {
+            throw new NotImplementedException();
+        }
+
+        public void TrackUserChangedMultiFactorAuthentication(User user, bool enabledMultiFactorAuth, string referrer)
         {
             throw new NotImplementedException();
         }

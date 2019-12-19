@@ -33,6 +33,7 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "VerifyMicrosoftPackage", "src\VerifyMicrosoftPackage\VerifyMicrosoftPackage.csproj", "{C57292F4-9661-4AEB-AD89-C82CF1152260}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "VerifyMicrosoftPackage.Facts", "tests\VerifyMicrosoftPackage.Facts\VerifyMicrosoftPackage.Facts.csproj", "{FFF38843-B8E1-40E7-95E4-E3346599E8D5}"
+EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DatabaseMigrationTools", "src\DatabaseMigrationTools\DatabaseMigrationTools.csproj", "{DCED7162-A24C-4579-96C8-544BFAF4C305}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NuGet.Services.DatabaseMigration", "src\NuGet.Services.DatabaseMigration\NuGet.Services.DatabaseMigration.csproj", "{F4C8C34F-72A9-4773-A315-8FA3F2D5CE4E}"
